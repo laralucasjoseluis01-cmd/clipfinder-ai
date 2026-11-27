@@ -64,7 +64,10 @@ async def get_kick_token():
         if response.status_code != 200:
             raise HTTPException(
                 502,
-                "Kick no aceptó las credenciales. Revisa la configuración."
+                detail={
+            "message": "Kick rechazó la consulta de categorías.",
+            "status": response.status_code,
+            "response": response.text[:1000]
             )
 
         result = response.json()
