@@ -19,29 +19,13 @@ app.mount(
     name="static"
 )
 
-# Caché de autenticación de Kick
-kick_token = None
-kick_token_expiry = 0
-
-
-@app.get("/")
-def home():
-    return FileResponse(
-        os.path.join(BASE, "static", "index.html")
-    )
-
-
-@app.get("/health")
-def health():
-    return {
-        "ok": True,
-        "service": "ClipFinder AI"
-    }
-
-
 # =====================================
 # AUTENTICACIÓN DE KICK
 # =====================================
+
+kick_token = None
+kick_token_expiry = 0
+
 
 async def get_kick_token():
     global kick_token, kick_token_expiry
@@ -114,11 +98,47 @@ def identify_link(url):
         )
 
     host = (parsed.hostname or "").lower()
-    path = parsed.path.strip("/").split("/")
 
-    if host == "kick.com" or host == "www.kick.com":
+    path = [
+        part for part in parsed.path.strip("/").split("/")
+        if part
+    ]
 
-        if not path or not path[0]:
+    # KICK
+    if host in ("kick.com", "www.kick.com"):
+
+        # VOD: kick.com/canal/videos/UUID
+        if len(path) >= 3 and path[1].lower() == "videos":
+
+            slug = path[0].lower()
+            vod_id = path[2]
+
+            if not re.fullmatch(r"[a-z0-9_-]+", slug):
+                raise HTTPException(
+                    400,
+                    "Nombre de canal inválido."
+                )
+
+            if not re.fullmatch(
+                r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+                r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                r"[0-9a-fA-F]{12}",
+                vod_id
+            ):
+                raise HTTPException(
+                    400,
+                    "Identificador de VOD inválido."
+                )
+
+            return {
+                "platform": "Kick",
+                "type": "vod",
+                "slug": slug,
+                "vod_id": vod_id
+            }
+
+        # CANAL
+        if not path:
             raise HTTPException(
                 400,
                 "No se encontró un canal."
@@ -134,17 +154,21 @@ def identify_link(url):
 
         return {
             "platform": "Kick",
+            "type": "channel",
             "slug": slug
         }
 
+    # YOUTUBE
     if host in (
         "youtube.com",
         "www.youtube.com",
         "m.youtube.com",
         "youtu.be"
     ):
+
         return {
-            "platform": "YouTube"
+            "platform": "YouTube",
+            "type": "video"
         }
 
     raise HTTPException(
@@ -194,6 +218,25 @@ async def get_kick_channel(slug):
             502,
             "No se pudo consultar el canal en Kick."
         )
+
+
+# =====================================
+# INICIO Y SALUD DEL SERVIDOR
+# =====================================
+
+@app.get("/")
+def home():
+    return FileResponse(
+        os.path.join(BASE, "static", "index.html")
+    )
+
+
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "service": "ClipFinder AI"
+    }
 
 
 # =====================================
@@ -269,7 +312,7 @@ async def openai_status():
 
 
 # =====================================
-# COMPROBAR ENLACES
+# RECONOCIMIENTO DE ENLACES
 # =====================================
 
 @app.post("/check-link")
@@ -286,20 +329,50 @@ async def check_link(data: dict):
 
     info = identify_link(url)
 
-    # YouTube
+    # ---------------------------------
+    # YOUTUBE
+    # ---------------------------------
+
     if info["platform"] == "YouTube":
+
         return {
             "status": "link_recognized",
             "platform": "YouTube",
-            "message": (
-                "Enlace de YouTube reconocido. "
-                "El análisis requiere acceso autorizado "
-                "al contenido audiovisual."
-            ),
-            "analysis_available": False
+            "type": "video",
+            "video_url": url,
+            "message": "Enlace de YouTube reconocido.",
+            "analysis_available": False,
+            "analysis_note": (
+                "Para analizar el contenido se necesita "
+                "acceso audiovisual autorizado."
+            )
         }
 
-    # Kick
+    # ---------------------------------
+    # VOD DE KICK
+    # ---------------------------------
+
+    if info["type"] == "vod":
+
+        return {
+            "status": "vod_recognized",
+            "platform": "Kick",
+            "type": "vod",
+            "channel": info["slug"],
+            "vod_id": info["vod_id"],
+            "vod_url": url,
+            "message": "VOD de Kick identificado correctamente.",
+            "analysis_available": False,
+            "analysis_note": (
+                "El VOD fue reconocido. Para analizarlo "
+                "necesitamos una fuente audiovisual autorizada."
+            )
+        }
+
+    # ---------------------------------
+    # CANAL DE KICK
+    # ---------------------------------
+
     channel = await get_kick_channel(
         info["slug"]
     )
@@ -313,6 +386,7 @@ async def check_link(data: dict):
     return {
         "status": "link_recognized",
         "platform": "Kick",
+        "type": "channel",
         "channel": channel.get(
             "slug",
             info["slug"]
