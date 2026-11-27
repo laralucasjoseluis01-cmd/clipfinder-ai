@@ -2,6 +2,7 @@
 import os
 import re
 import time
+import json
 from urllib.parse import urlparse
 
 import httpx
@@ -20,12 +21,23 @@ app.mount(
 )
 
 # =====================================
-# AUTENTICACIÓN DE KICK
+# CONFIGURACIÓN
 # =====================================
+
+OPENAI_URL = "https://api.openai.com/v1/responses"
+
+OPENAI_MODEL = os.getenv(
+    "OPENAI_MODEL",
+    "gpt-4o-mini"
+)
 
 kick_token = None
 kick_token_expiry = 0
 
+
+# =====================================
+# AUTENTICACIÓN DE KICK
+# =====================================
 
 async def get_kick_token():
     global kick_token, kick_token_expiry
@@ -89,6 +101,7 @@ async def get_kick_token():
 # =====================================
 
 def identify_link(url):
+
     parsed = urlparse(url)
 
     if parsed.scheme != "https":
@@ -105,9 +118,9 @@ def identify_link(url):
     ]
 
     # KICK
+
     if host in ("kick.com", "www.kick.com"):
 
-        # VOD: kick.com/canal/videos/UUID
         if len(path) >= 3 and path[1].lower() == "videos":
 
             slug = path[0].lower()
@@ -137,7 +150,6 @@ def identify_link(url):
                 "vod_id": vod_id
             }
 
-        # CANAL
         if not path:
             raise HTTPException(
                 400,
@@ -159,6 +171,7 @@ def identify_link(url):
         }
 
     # YOUTUBE
+
     if host in (
         "youtube.com",
         "www.youtube.com",
@@ -221,7 +234,7 @@ async def get_kick_channel(slug):
 
 
 # =====================================
-# INICIO Y SALUD DEL SERVIDOR
+# INICIO Y SALUD
 # =====================================
 
 @app.get("/")
@@ -284,7 +297,8 @@ async def openai_status():
             return {
                 "connected": True,
                 "service": "OpenAI API",
-                "message": "Conexión con OpenAI completada."
+                "message": "Conexión con OpenAI completada.",
+                "model": OPENAI_MODEL
             }
 
         if response.status_code == 401:
@@ -312,6 +326,215 @@ async def openai_status():
 
 
 # =====================================
+# MOTOR DE ANÁLISIS DE OPENAI
+# =====================================
+
+async def analyze_transcript(transcript):
+
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        raise HTTPException(
+            503,
+            "Falta OPENAI_API_KEY en Render."
+        )
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "moments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "start": {
+                            "type": "string"
+                        },
+                        "end": {
+                            "type": "string"
+                        },
+                        "title": {
+                            "type": "string"
+                        },
+                        "category": {
+                            "type": "string",
+                            "enum": [
+                                "Gracioso",
+                                "Reacción",
+                                "Jugada",
+                                "Sorpresa",
+                                "Conversación",
+                                "Emocionante",
+                                "Otro"
+                            ]
+                        },
+                        "description": {
+                            "type": "string"
+                        },
+                        "score": {
+                            "type": "integer"
+                        }
+                    },
+                    "required": [
+                        "start",
+                        "end",
+                        "title",
+                        "category",
+                        "description",
+                        "score"
+                    ],
+                    "additionalProperties": False
+                }
+            }
+        },
+        "required": ["moments"],
+        "additionalProperties": False
+    }
+
+    instructions = """
+Eres el analizador de momentos destacados de ClipFinder AI.
+
+Analiza la transcripción proporcionada.
+
+Busca:
+- Bromas y momentos graciosos.
+- Reacciones inesperadas.
+- Jugadas interesantes.
+- Sorpresas.
+- Conversaciones interesantes.
+- Momentos emocionantes.
+
+Reglas:
+1. Utiliza únicamente información presente en la transcripción.
+2. No inventes acontecimientos.
+3. No inventes marcas de tiempo.
+4. Utiliza las marcas de tiempo proporcionadas.
+5. Ordena los momentos cronológicamente.
+6. Evita resultados repetidos.
+7. La puntuación score debe estar entre 1 y 100.
+8. Devuelve únicamente el JSON solicitado.
+"""
+
+    payload = {
+        "model": OPENAI_MODEL,
+        "instructions": instructions,
+        "input": transcript,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "clipfinder_moments",
+                "strict": True,
+                "schema": schema
+            }
+        },
+        "max_output_tokens": 4000
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+
+            response = await client.post(
+                OPENAI_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+                json=payload
+            )
+
+        if response.status_code == 401:
+            raise HTTPException(
+                401,
+                "La clave de OpenAI no es válida."
+            )
+
+        if response.status_code == 429:
+            raise HTTPException(
+                429,
+                "Se alcanzó un límite de OpenAI o falta facturación."
+            )
+
+        if response.status_code != 200:
+            raise HTTPException(
+                502,
+                "OpenAI no pudo completar el análisis."
+            )
+
+        result = response.json()
+
+        output_text = None
+
+        for item in result.get("output", []):
+            if item.get("type") == "message":
+                for content in item.get("content", []):
+                    if content.get("type") == "output_text":
+                        output_text = content.get("text")
+                        break
+
+        if not output_text:
+            raise HTTPException(
+                502,
+                "OpenAI no devolvió resultados."
+            )
+
+        parsed = json.loads(output_text)
+
+        return parsed
+
+    except httpx.TimeoutException:
+        raise HTTPException(
+            504,
+            "El análisis tardó demasiado."
+        )
+
+    except httpx.RequestError:
+        raise HTTPException(
+            502,
+            "No se pudo conectar con OpenAI."
+        )
+
+    except json.JSONDecodeError:
+        raise HTTPException(
+            502,
+            "OpenAI devolvió un resultado JSON inválido."
+        )
+
+
+# =====================================
+# ANALIZAR TRANSCRIPCIÓN
+# =====================================
+
+@app.post("/analyze-transcript")
+async def analyze_transcript_endpoint(data: dict):
+
+    transcript = str(
+        data.get("transcript", "")
+    ).strip()
+
+    if not transcript:
+        raise HTTPException(
+            400,
+            "Debes proporcionar una transcripción."
+        )
+
+    if len(transcript) > 30000:
+        raise HTTPException(
+            413,
+            "La transcripción supera el límite de 30000 caracteres."
+        )
+
+    results = await analyze_transcript(transcript)
+
+    return {
+        "status": "completed",
+        "service": "ClipFinder AI",
+        "model": OPENAI_MODEL,
+        "total_moments": len(results["moments"]),
+        "moments": results["moments"]
+    }
+
+
+# =====================================
 # RECONOCIMIENTO DE ENLACES
 # =====================================
 
@@ -329,9 +552,7 @@ async def check_link(data: dict):
 
     info = identify_link(url)
 
-    # ---------------------------------
     # YOUTUBE
-    # ---------------------------------
 
     if info["platform"] == "YouTube":
 
@@ -343,14 +564,12 @@ async def check_link(data: dict):
             "message": "Enlace de YouTube reconocido.",
             "analysis_available": False,
             "analysis_note": (
-                "Para analizar el contenido se necesita "
-                "acceso audiovisual autorizado."
+                "Se necesita una fuente audiovisual "
+                "autorizada para analizar el contenido."
             )
         }
 
-    # ---------------------------------
     # VOD DE KICK
-    # ---------------------------------
 
     if info["type"] == "vod":
 
@@ -364,18 +583,14 @@ async def check_link(data: dict):
             "message": "VOD de Kick identificado correctamente.",
             "analysis_available": False,
             "analysis_note": (
-                "El VOD fue reconocido. Para analizarlo "
-                "necesitamos una fuente audiovisual autorizada."
+                "El VOD está identificado. Todavía se necesita "
+                "una fuente audiovisual accesible para analizarlo."
             )
         }
 
-    # ---------------------------------
     # CANAL DE KICK
-    # ---------------------------------
 
-    channel = await get_kick_channel(
-        info["slug"]
-    )
+    channel = await get_kick_channel(info["slug"])
 
     stream = channel.get("stream") or {}
 
@@ -404,8 +619,7 @@ async def check_link(data: dict):
         ),
         "analysis_available": False,
         "analysis_note": (
-            "El canal fue identificado correctamente. "
             "El análisis audiovisual requiere una fuente "
-            "de audio y vídeo autorizada."
+            "de audio y vídeo accesible."
         )
     }
