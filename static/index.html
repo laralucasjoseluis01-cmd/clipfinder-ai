@@ -19,7 +19,6 @@ body{
 }
 
 header{text-align:center;margin-bottom:30px}
-
 h1{font-size:36px;margin-bottom:8px}
 .logo{color:#facc15}
 .subtitle{color:#a5a5a5}
@@ -90,6 +89,8 @@ footer{
  font-size:12px;
  margin-top:30px;
 }
+
+a{color:#facc15}
 </style>
 </head>
 
@@ -97,7 +98,9 @@ footer{
 
 <header>
  <h1>ClipFinder <span class="logo">AI</span></h1>
- <p class="subtitle">Encuentra momentos destacados de tus transmisiones.</p>
+ <p class="subtitle">
+  Encuentra momentos destacados de tus transmisiones.
+ </p>
 </header>
 
 <section>
@@ -114,25 +117,30 @@ footer{
  </button>
 
  <p id="linkStatus">
-  Introduce el enlace de un canal de Kick para comprobar su transmisión.
+  Introduce un enlace de canal o VOD de Kick.
  </p>
 
  <div id="playerContainer" class="hidden">
-  <h3 id="playerTitle">Reproductor de Kick</h3>
+  <h3 id="playerTitle">Reproductor</h3>
+
   <div class="player" id="player"></div>
-  <p class="info">
-   Reproductor oficial de Kick. La disponibilidad depende del canal
-   y de las condiciones de la plataforma.
+
+  <p class="info" id="playerInfo">
+   Reproductor oficial de la plataforma.
   </p>
+
+  <p id="externalLink"></p>
  </div>
 </section>
 
 <section>
  <h2>Momentos destacados</h2>
+
  <p class="info">
-  El análisis automático con inteligencia artificial todavía no está conectado.
-  Primero estamos preparando el acceso autorizado al contenido.
+  El análisis automático con inteligencia artificial
+  todavía necesita una fuente audiovisual autorizada.
  </p>
+
  <div id="results"></div>
 </section>
 
@@ -141,6 +149,7 @@ footer{
 </footer>
 
 <script>
+
 async function checkLink(){
 
  const url=document.getElementById("url").value.trim();
@@ -149,8 +158,11 @@ async function checkLink(){
  const playerContainer=document.getElementById("playerContainer");
  const player=document.getElementById("player");
  const playerTitle=document.getElementById("playerTitle");
+ const playerInfo=document.getElementById("playerInfo");
+ const externalLink=document.getElementById("externalLink");
 
  player.innerHTML="";
+ externalLink.innerHTML="";
  playerContainer.classList.add("hidden");
 
  if(!url){
@@ -180,12 +192,65 @@ async function checkLink(){
    );
   }
 
-  status.textContent=result.message || "Enlace reconocido.";
+  // =================================
+  // VOD DE KICK
+  // =================================
 
-  if(result.platform==="Kick" && result.channel){
+  if(
+   result.platform==="Kick" &&
+   result.type==="vod" &&
+   result.vod_id
+  ){
+
+   status.textContent=
+    "VOD de Kick identificado correctamente.";
 
    playerTitle.textContent=
-    "Transmisión de "+result.channel;
+    "VOD de "+result.channel;
+
+   playerInfo.textContent=
+    "Vídeo terminado. Si Kick permite la inserción, "+
+    "podrás visualizarlo aquí.";
+
+   const iframe=document.createElement("iframe");
+
+   iframe.src=
+    "https://player.kick.com/video/"+
+    encodeURIComponent(result.vod_id);
+
+   iframe.title="Reproductor de VOD de Kick";
+   iframe.allow="autoplay; fullscreen; picture-in-picture";
+   iframe.allowFullscreen=true;
+   iframe.referrerPolicy="strict-origin-when-cross-origin";
+
+   player.appendChild(iframe);
+
+   const link=document.createElement("a");
+   link.href=result.vod_url || url;
+   link.target="_blank";
+   link.rel="noopener noreferrer";
+   link.textContent="Abrir VOD directamente en Kick";
+
+   externalLink.appendChild(link);
+
+   playerContainer.classList.remove("hidden");
+
+  }
+
+  // =================================
+  // CANAL DE KICK
+  // =================================
+
+  else if(
+   result.platform==="Kick" &&
+   result.channel
+  ){
+
+   playerTitle.textContent=
+    "Canal de "+result.channel;
+
+   playerInfo.textContent=
+    "Reproductor oficial de Kick.";
 
    const iframe=document.createElement("iframe");
 
@@ -193,28 +258,37 @@ async function checkLink(){
     "https://player.kick.com/"+
     encodeURIComponent(result.channel);
 
-   iframe.title="Reproductor oficial de Kick";
+   iframe.title="Reproductor de Kick";
    iframe.allow="autoplay; fullscreen; picture-in-picture";
    iframe.allowFullscreen=true;
    iframe.referrerPolicy="strict-origin-when-cross-origin";
 
    player.appendChild(iframe);
+
    playerContainer.classList.remove("hidden");
 
-   if(result.is_live){
-    status.textContent=
-     "Canal encontrado. Está transmitiendo en directo.";
-   }else{
-    status.textContent=
-     "Canal encontrado. El canal está desconectado. "+
-     "El reproductor puede no mostrar contenido.";
-   }
+   status.textContent=result.is_live
+    ? "Canal encontrado. Está transmitiendo en directo."
+    : "Canal encontrado. Actualmente está desconectado.";
 
-  }else if(result.platform==="YouTube"){
+  }
+
+  // =================================
+  // YOUTUBE
+  // =================================
+
+  else if(result.platform==="YouTube"){
 
    status.textContent=
     "Enlace de YouTube reconocido. "+
-    "La integración de su reproductor se añadirá después.";
+    "El reproductor se integrará posteriormente.";
+
+  }
+
+  else{
+
+   status.textContent=
+    result.message || "Enlace reconocido.";
 
   }
 
@@ -228,7 +302,9 @@ async function checkLink(){
   button.textContent="Comprobar enlace";
 
  }
+
 }
+
 </script>
 
 </body>
