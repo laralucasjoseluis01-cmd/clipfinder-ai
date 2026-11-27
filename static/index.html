@@ -1,0 +1,78 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipFinder AI</title>
+<style>
+body{background:#0b1020;color:white;font-family:Arial,sans-serif;max-width:850px;margin:40px auto;padding:20px}
+section{background:#151d32;padding:22px;border-radius:15px;margin:20px 0}
+input,button{padding:13px;border-radius:8px;margin:8px 0}
+input{width:95%;background:#0b1020;color:white;border:1px solid #445}
+button{background:#795cff;color:white;border:0;font-weight:bold;cursor:pointer}
+.item{padding:12px;border-bottom:1px solid #445}
+</style>
+</head>
+<body>
+<h1>ClipFinder <span style="color:#9b87ff">AI</span></h1>
+<p>Encuentra momentos destacados de tus videos.</p>
+
+<section>
+<h2>Analizar video</h2>
+<input type="file" id="file" accept="video/*,audio/*">
+<br>
+<button onclick="analyze()">Buscar momentos</button>
+<p id="status">Selecciona un video.</p>
+<div id="results"></div>
+</section>
+
+<section>
+<h2>Analizar enlace</h2>
+<input id="url" placeholder="Pega un enlace de Kick o YouTube">
+<button onclick="checkLink()">Comprobar enlace</button>
+<p id="linkStatus">Los enlaces requieren acceso autorizado al contenido.</p>
+</section>
+
+<script>
+async function analyze(){
+ const file=document.getElementById("file").files[0];
+ if(!file){document.getElementById("status").textContent="Selecciona un archivo.";return;}
+ const status=document.getElementById("status");
+ status.textContent="Analizando video...";
+ const data=new FormData();
+ data.append("file",file);
+ try{
+  const response=await fetch("/analyze-upload",{method:"POST",body:data});
+  const result=await response.json();
+  if(!response.ok)throw new Error(result.detail||"Error");
+  status.textContent="Duración: "+result.duration_seconds+" segundos. "+result.note;
+  const container=document.getElementById("results");
+  container.innerHTML="";
+  result.moments.forEach(moment=>{
+   const div=document.createElement("div");
+   div.className="item";
+   const min=Math.floor(moment.seconds/60);
+   const sec=Math.floor(moment.seconds%60);
+   div.textContent=min+":"+String(sec).padStart(2,"0")+" — intensidad "+moment.intensity;
+   container.appendChild(div);
+  });
+ }catch(error){status.textContent="Error: "+error.message;}
+}
+
+async function checkLink(){
+ const url=document.getElementById("url").value.trim();
+ const status=document.getElementById("linkStatus");
+ try{
+  const response=await fetch("/analyze-link",{
+   method:"POST",
+   headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({url})
+  });
+  const result=await response.json();
+  status.textContent=result.message||result.detail;
+ }catch(error){status.textContent="No se pudo contactar al servidor.";}
+}
+</script>
+</body>
+</html>
