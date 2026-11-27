@@ -55,21 +55,6 @@ button:disabled{opacity:.5;cursor:wait}
 
 #linkStatus{color:#cbd5e1;line-height:1.5}
 
-.player{
- width:100%;
- aspect-ratio:16/9;
- background:#050505;
- border-radius:12px;
- overflow:hidden;
- margin-top:18px;
-}
-
-.player iframe{
- width:100%;
- height:100%;
- border:0;
-}
-
 .hidden{display:none}
 
 .info{
@@ -78,9 +63,23 @@ button:disabled{opacity:.5;cursor:wait}
  line-height:1.5;
 }
 
-.item{
- padding:12px;
- border-bottom:1px solid #39445a;
+.vod-card{
+ background:#080b12;
+ border:1px solid #39445a;
+ border-radius:12px;
+ padding:20px;
+ margin-top:18px;
+}
+
+.vod-button{
+ display:inline-block;
+ margin-top:12px;
+ background:#facc15;
+ color:#111;
+ padding:13px 18px;
+ border-radius:8px;
+ font-weight:bold;
+ text-decoration:none;
 }
 
 footer{
@@ -89,8 +88,6 @@ footer{
  font-size:12px;
  margin-top:30px;
 }
-
-a{color:#facc15}
 </style>
 </head>
 
@@ -117,19 +114,25 @@ a{color:#facc15}
  </button>
 
  <p id="linkStatus">
-  Introduce un enlace de canal o VOD de Kick.
+  Introduce el enlace de un canal o VOD de Kick.
  </p>
 
- <div id="playerContainer" class="hidden">
-  <h3 id="playerTitle">Reproductor</h3>
+ <div id="vodContainer" class="hidden">
+  <div class="vod-card">
+   <h3 id="vodTitle">VOD encontrado</h3>
 
-  <div class="player" id="player"></div>
+   <p id="vodDescription" class="info"></p>
 
-  <p class="info" id="playerInfo">
-   Reproductor oficial de la plataforma.
-  </p>
-
-  <p id="externalLink"></p>
+   <a
+    id="vodButton"
+    class="vod-button"
+    href="#"
+    target="_blank"
+    rel="noopener noreferrer"
+   >
+    Abrir vídeo original en Kick
+   </a>
+  </div>
  </div>
 </section>
 
@@ -137,8 +140,8 @@ a{color:#facc15}
  <h2>Momentos destacados</h2>
 
  <p class="info">
-  El análisis automático con inteligencia artificial
-  todavía necesita una fuente audiovisual autorizada.
+  El motor de análisis audiovisual todavía está pendiente
+  de conectar con una fuente autorizada.
  </p>
 
  <div id="results"></div>
@@ -155,15 +158,14 @@ async function checkLink(){
  const url=document.getElementById("url").value.trim();
  const status=document.getElementById("linkStatus");
  const button=document.getElementById("checkButton");
- const playerContainer=document.getElementById("playerContainer");
- const player=document.getElementById("player");
- const playerTitle=document.getElementById("playerTitle");
- const playerInfo=document.getElementById("playerInfo");
- const externalLink=document.getElementById("externalLink");
 
- player.innerHTML="";
- externalLink.innerHTML="";
- playerContainer.classList.add("hidden");
+ const vodContainer=document.getElementById("vodContainer");
+ const vodTitle=document.getElementById("vodTitle");
+ const vodDescription=document.getElementById("vodDescription");
+ const vodButton=document.getElementById("vodButton");
+
+ vodContainer.classList.add("hidden");
+ vodButton.href="#";
 
  if(!url){
   status.textContent="Introduce un enlace primero.";
@@ -192,96 +194,63 @@ async function checkLink(){
    );
   }
 
-  // =================================
   // VOD DE KICK
-  // =================================
 
   if(
    result.platform==="Kick" &&
-   result.type==="vod" &&
-   result.vod_id
+   result.type==="vod"
   ){
+
+   const originalUrl=result.vod_url || url;
+
+   vodTitle.textContent=
+    "VOD encontrado: "+result.channel;
+
+   vodDescription.textContent=
+    "Identificador del vídeo: "+result.vod_id+
+    ". El vídeo se abrirá directamente en Kick.";
+
+   vodButton.href=originalUrl;
+
+   vodContainer.classList.remove("hidden");
 
    status.textContent=
     "VOD de Kick identificado correctamente.";
 
-   playerTitle.textContent=
-    "VOD de "+result.channel;
-
-   playerInfo.textContent=
-    "Vídeo terminado. Si Kick permite la inserción, "+
-    "podrás visualizarlo aquí.";
-
-   const iframe=document.createElement("iframe");
-
-   iframe.src=
-    "https://player.kick.com/video/"+
-    encodeURIComponent(result.vod_id);
-
-   iframe.title="Reproductor de VOD de Kick";
-   iframe.allow="autoplay; fullscreen; picture-in-picture";
-   iframe.allowFullscreen=true;
-   iframe.referrerPolicy="strict-origin-when-cross-origin";
-
-   player.appendChild(iframe);
-
-   const link=document.createElement("a");
-   link.href=result.vod_url || url;
-   link.target="_blank";
-   link.rel="noopener noreferrer";
-   link.textContent="Abrir VOD directamente en Kick";
-
-   externalLink.appendChild(link);
-
-   playerContainer.classList.remove("hidden");
-
   }
 
-  // =================================
   // CANAL DE KICK
-  // =================================
 
   else if(
    result.platform==="Kick" &&
    result.channel
   ){
 
-   playerTitle.textContent=
-    "Canal de "+result.channel;
-
-   playerInfo.textContent=
-    "Reproductor oficial de Kick.";
-
-   const iframe=document.createElement("iframe");
-
-   iframe.src=
-    "https://player.kick.com/"+
-    encodeURIComponent(result.channel);
-
-   iframe.title="Reproductor de Kick";
-   iframe.allow="autoplay; fullscreen; picture-in-picture";
-   iframe.allowFullscreen=true;
-   iframe.referrerPolicy="strict-origin-when-cross-origin";
-
-   player.appendChild(iframe);
-
-   playerContainer.classList.remove("hidden");
-
    status.textContent=result.is_live
     ? "Canal encontrado. Está transmitiendo en directo."
     : "Canal encontrado. Actualmente está desconectado.";
 
+   vodTitle.textContent="Canal: "+result.channel;
+
+   vodDescription.textContent=
+    "Puedes abrir el canal en la plataforma original.";
+
+   vodButton.href=
+    "https://kick.com/"+encodeURIComponent(result.channel);
+
+   vodButton.textContent="Abrir canal en Kick";
+
+   vodContainer.classList.remove("hidden");
+
   }
 
-  // =================================
   // YOUTUBE
-  // =================================
 
   else if(result.platform==="YouTube"){
 
    status.textContent=
     "Enlace de YouTube reconocido. "+
-    "El reproductor se integrará posteriormente.";
+    "La integración del reproductor está pendiente.";
 
   }
 
