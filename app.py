@@ -62,13 +62,14 @@ async def get_kick_token():
             )
 
         if response.status_code != 200:
-            raise HTTPException(
-                502,
-                detail={
+    raise HTTPException(
+        502,
+        detail={
             "message": "Kick rechazó la consulta de categorías.",
             "status": response.status_code,
             "response": response.text[:1000]
-            )
+        }
+    )
 
         result = response.json()
         kick_token = result["access_token"]
@@ -96,10 +97,14 @@ async def kick_status():
             )
 
         if response.status_code != 200:
-            raise HTTPException(
-                502,
-                "Se obtuvo el token, pero la API no respondió correctamente."
-            )
+    raise HTTPException(
+        502,
+        detail={
+            "message": "Kick rechazó la consulta de categorías.",
+            "status": response.status_code,
+            "response": response.text[:1000]
+        }
+    )
 
         return {
             "connected": True,
