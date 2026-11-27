@@ -29,7 +29,10 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "ClipFinder AI"}
+    return {
+        "ok": True,
+        "service": "ClipFinder AI"
+    }
 
 
 async def get_kick_token():
@@ -62,49 +65,63 @@ async def get_kick_token():
             )
 
         if response.status_code != 200:
-    raise HTTPException(
-        502,
-        detail={
-            "message": "Kick rechazó la consulta de categorías.",
-            "status": response.status_code,
-            "response": response.text[:1000]
-        }
-    )
+            raise HTTPException(
+                502,
+                detail={
+                    "message": "Kick rechazó la autenticación.",
+                    "status": response.status_code,
+                    "response": response.text[:1000]
+                }
+            )
 
         result = response.json()
+
         kick_token = result["access_token"]
+
         kick_token_expiry = (
-            time.time() + int(result.get("expires_in", 3600)) - 60
+            time.time() +
+            int(result.get("expires_in", 3600)) - 60
         )
 
         return kick_token
 
     except httpx.RequestError:
-        raise HTTPException(502, "No se pudo conectar con Kick.")
+        raise HTTPException(
+            502,
+            "No se pudo conectar con el servidor de Kick."
+        )
+
     except (KeyError, ValueError):
-        raise HTTPException(502, "Respuesta inesperada de Kick.")
+        raise HTTPException(
+            502,
+            "Kick devolvió una respuesta inesperada."
+        )
 
 
 @app.get("/kick/status")
 async def kick_status():
+
     token = await get_kick_token()
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:
+
             response = await client.get(
                 "https://api.kick.com/public/v1/categories",
-                headers={"Authorization": f"Bearer {token}"}
+                headers={
+                    "Authorization": f"Bearer {token}"
+                }
             )
 
         if response.status_code != 200:
-    raise HTTPException(
-        502,
-        detail={
-            "message": "Kick rechazó la consulta de categorías.",
-            "status": response.status_code,
-            "response": response.text[:1000]
-        }
-    )
+            raise HTTPException(
+                502,
+                detail={
+                    "message": "Kick rechazó la consulta de categorías.",
+                    "status": response.status_code,
+                    "response": response.text[:1000]
+                }
+            )
 
         return {
             "connected": True,
@@ -113,15 +130,22 @@ async def kick_status():
         }
 
     except httpx.RequestError:
-        raise HTTPException(502, "No se pudo consultar la API de Kick.")
+        raise HTTPException(
+            502,
+            "No se pudo consultar la API de Kick."
+        )
 
 
 def identify_platform(url):
+
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
 
     if parsed.scheme != "https":
-        raise HTTPException(400, "Utiliza un enlace HTTPS.")
+        raise HTTPException(
+            400,
+            "Utiliza un enlace HTTPS."
+        )
 
     if host == "kick.com" or host.endswith(".kick.com"):
         return "Kick"
@@ -133,20 +157,28 @@ def identify_platform(url):
     ):
         return "YouTube"
 
-    raise HTTPException(400, "Plataforma no compatible.")
+    raise HTTPException(
+        400,
+        "Plataforma no compatible."
+    )
 
 
 @app.post("/check-link")
 @app.post("/analyze-link")
 async def check_link(data: dict):
+
     url = str(data.get("url", "")).strip()
 
     if not url:
-        raise HTTPException(400, "Introduce un enlace.")
+        raise HTTPException(
+            400,
+            "Introduce un enlace."
+        )
 
     platform = identify_platform(url)
 
     if platform == "Kick":
+
         await get_kick_token()
 
         return {
@@ -154,9 +186,9 @@ async def check_link(data: dict):
             "platform": "Kick",
             "api_connected": True,
             "message": (
-                "Enlace reconocido y conexión con Kick comprobada. "
-                "Todavía necesitamos acceso autorizado al vídeo "
-                "para analizar sus momentos."
+                "Enlace reconocido y autenticación con Kick "
+                "completada. Todavía necesitamos acceso "
+                "autorizado al vídeo para analizarlo."
             )
         }
 
@@ -166,6 +198,6 @@ async def check_link(data: dict):
         "api_connected": False,
         "message": (
             "Enlace de YouTube reconocido. "
-            "El análisis requiere acceso autorizado al contenido."
+            "El análisis necesita acceso autorizado al contenido."
         )
     }
