@@ -1,5 +1,6 @@
 
 import os
+import re
 import time
 from urllib.parse import urlparse
 
@@ -29,10 +30,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {
-        "ok": True,
-        "service": "ClipFinder AI"
-    }
+    return {"ok": True, "service": "ClipFinder AI"}
 
 
 async def get_kick_token():
@@ -58,9 +56,6 @@ async def get_kick_token():
                     "grant_type": "client_credentials",
                     "client_id": client_id,
                     "client_secret": client_secret
-                },
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded"
                 }
             )
 
@@ -68,19 +63,16 @@ async def get_kick_token():
             raise HTTPException(
                 502,
                 detail={
-                    "message": "Kick rechazó la autenticación.",
+                    "message": "Error de autenticación con Kick.",
                     "status": response.status_code,
-                    "response": response.text[:1000]
+                    "response": response.text[:500]
                 }
             )
 
         result = response.json()
-
         kick_token = result["access_token"]
-
         kick_token_expiry = (
-            time.time() +
-            int(result.get("expires_in", 3600)) - 60
+            time.time() + int(result.get("expires_in", 3600)) - 60
         )
 
         return kick_token
@@ -88,116 +80,132 @@ async def get_kick_token():
     except httpx.RequestError:
         raise HTTPException(
             502,
-            "No se pudo conectar con el servidor de Kick."
+            "No se pudo conectar con Kick."
         )
-
     except (KeyError, ValueError):
         raise HTTPException(
             502,
-            "Kick devolvió una respuesta inesperada."
+            "Respuesta inesperada de Kick."
         )
 
 
-@app.get("/kick/status")
-async def kick_status():
+def identify_link(url):
+    parsed = urlparse(url)
 
+    if parsed.scheme != "https":
+        raise HTTPException(400, "El enlace debe utilizar HTTPS.")
+
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.strip("/").split("/")
+
+    if host == "kick.com":
+        if not path or not path[0]:
+            raise HTTPException(400, "No se encontró un canal.")
+
+        slug = path[0].lower()
+
+        if not re.fullmatch(r"[a-z0-9_-]+", slug):
+            raise HTTPException(400, "Nombre de canal inválido.")
+
+        return {"platform": "Kick", "slug": slug}
+
+    if host in ("youtube.com", "www.youtube.com", "youtu.be"):
+        return {"platform": "YouTube"}
+
+    raise HTTPException(400, "Plataforma no compatible.")
+
+
+async def get_kick_channel(slug):
     token = await get_kick_token()
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-
             response = await client.get(
-                "https://api.kick.com/public/v1/categories",
-                headers={
-                    "Authorization": f"Bearer {token}"
-                }
+                "https://api.kick.com/public/v1/channels",
+                params={"slug": slug},
+                headers={"Authorization": f"Bearer {token}"}
             )
 
         if response.status_code != 200:
             raise HTTPException(
                 502,
                 detail={
-                    "message": "Kick rechazó la consulta de categorías.",
+                    "message": "Kick rechazó la consulta del canal.",
                     "status": response.status_code,
-                    "response": response.text[:1000]
+                    "response": response.text[:500]
                 }
             )
 
-        return {
-            "connected": True,
-            "service": "Kick API",
-            "message": "Conexión con Kick comprobada correctamente."
-        }
+        result = response.json()
+        channels = result.get("data", [])
+
+        if not channels:
+            raise HTTPException(
+                404,
+                "No se encontró el canal de Kick."
+            )
+
+        return channels[0]
 
     except httpx.RequestError:
         raise HTTPException(
             502,
-            "No se pudo consultar la API de Kick."
+            "No se pudo consultar el canal en Kick."
         )
 
 
-def identify_platform(url):
+@app.get("/kick/status")
+async def kick_status():
+    await get_kick_token()
 
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
-
-    if parsed.scheme != "https":
-        raise HTTPException(
-            400,
-            "Utiliza un enlace HTTPS."
-        )
-
-    if host == "kick.com" or host.endswith(".kick.com"):
-        return "Kick"
-
-    if (
-        host == "youtube.com"
-        or host.endswith(".youtube.com")
-        or host == "youtu.be"
-    ):
-        return "YouTube"
-
-    raise HTTPException(
-        400,
-        "Plataforma no compatible."
-    )
+    return {
+        "connected": True,
+        "service": "Kick API",
+        "message": "Autenticación con Kick completada."
+    }
 
 
 @app.post("/check-link")
 @app.post("/analyze-link")
 async def check_link(data: dict):
-
     url = str(data.get("url", "")).strip()
 
     if not url:
-        raise HTTPException(
-            400,
-            "Introduce un enlace."
-        )
+        raise HTTPException(400, "Introduce un enlace.")
 
-    platform = identify_platform(url)
+    info = identify_link(url)
 
-    if platform == "Kick":
-
-        await get_kick_token()
-
+    if info["platform"] == "YouTube":
         return {
             "status": "link_recognized",
-            "platform": "Kick",
-            "api_connected": True,
+            "platform": "YouTube",
             "message": (
-                "Enlace reconocido y autenticación con Kick "
-                "completada. Todavía necesitamos acceso "
-                "autorizado al vídeo para analizarlo."
+                "Enlace reconocido. El análisis requiere "
+                "acceso autorizado al contenido audiovisual."
             )
         }
 
+    channel = await get_kick_channel(info["slug"])
+
+    stream = channel.get("stream") or {}
+    is_live = bool(stream.get("is_live", False))
+
     return {
         "status": "link_recognized",
-        "platform": "YouTube",
-        "api_connected": False,
+        "platform": "Kick",
+        "channel": channel.get("slug", info["slug"]),
+        "title": channel.get("stream_title") or channel.get("title"),
+        "is_live": is_live,
+        "viewer_count": stream.get("viewer_count"),
         "message": (
-            "Enlace de YouTube reconocido. "
-            "El análisis necesita acceso autorizado al contenido."
+            "Canal encontrado. Está transmitiendo en directo."
+            if is_live
+            else "Canal encontrado. Actualmente no está en directo."
+        ),
+        "analysis_available": False,
+        "analysis_note": (
+            "La API proporciona información del canal, "
+            "pero todavía necesitamos acceso autorizado "
+            "al vídeo para analizarlo."
         )
     }
