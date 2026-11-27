@@ -1,137 +1,163 @@
 
-import math
-import shutil
-import struct
-import subprocess
-import uuid
-import wave
-from pathlib import Path
+import os
+import time
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-BASE = Path(__file__).parent
-TEMP = BASE / "tmp"
-TEMP.mkdir(exist_ok=True)
+BASE = os.path.dirname(os.path.abspath(__file__))
 
 app = FastAPI(title="ClipFinder AI")
 
 app.mount(
     "/static",
-    StaticFiles(directory=BASE / "static"),
+    StaticFiles(directory=os.path.join(BASE, "static")),
     name="static"
 )
 
+kick_token = None
+kick_token_expiry = 0
+
+
 @app.get("/")
 def home():
-    return FileResponse(BASE / "static" / "index.html")
+    return FileResponse(os.path.join(BASE, "static", "index.html"))
+
 
 @app.get("/health")
 def health():
     return {"ok": True, "service": "ClipFinder AI"}
 
-@app.post("/analyze-upload")
-async def analyze_upload(file: UploadFile = File(...)):
-    ext = Path(file.filename or "").suffix.lower()
 
-    allowed = {
-        ".mp4", ".mov", ".mkv", ".webm",
-        ".mp3", ".wav", ".m4a"
-    }
+async def get_kick_token():
+    global kick_token, kick_token_expiry
 
-    if ext not in allowed:
-        raise HTTPException(400, "Formato no compatible")
+    if kick_token and time.time() < kick_token_expiry:
+        return kick_token
 
-    token = uuid.uuid4().hex
-    source = TEMP / f"{token}{ext}"
-    audio = TEMP / f"{token}.wav"
+    client_id = os.getenv("KICK_CLIENT_ID")
+    client_secret = os.getenv("KICK_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        raise HTTPException(
+            503,
+            "Faltan las credenciales de Kick en Render."
+        )
 
     try:
-        with source.open("wb") as output:
-            shutil.copyfileobj(file.file, output)
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                "https://id.kick.com/oauth/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": client_id,
+                    "client_secret": client_secret
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded"
+                }
+            )
 
-        result = subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", str(source),
-                "-vn", "-ac", "1", "-ar", "16000",
-                str(audio)
-            ],
-            capture_output=True,
-            text=True,
-            timeout=900
+        if response.status_code != 200:
+            raise HTTPException(
+                502,
+                "Kick no aceptó las credenciales. Revisa la configuración."
+            )
+
+        result = response.json()
+        kick_token = result["access_token"]
+        kick_token_expiry = (
+            time.time() + int(result.get("expires_in", 3600)) - 60
         )
 
-        if result.returncode != 0:
-            raise HTTPException(422, "No se pudo procesar el audio")
+        return kick_token
 
-        with wave.open(str(audio), "rb") as wav:
-            rate = wav.getframerate()
-            frames = wav.getnframes()
-            raw = wav.readframes(frames)
+    except httpx.RequestError:
+        raise HTTPException(502, "No se pudo conectar con Kick.")
+    except (KeyError, ValueError):
+        raise HTTPException(502, "Respuesta inesperada de Kick.")
 
-        samples = struct.unpack(
-            "<" + "h" * (len(raw) // 2), raw
-        )
 
-        window = rate // 2
-        hop = rate // 4
-        moments = []
+@app.get("/kick/status")
+async def kick_status():
+    token = await get_kick_token()
 
-        for start in range(0, len(samples) - window, hop):
-            chunk = samples[start:start + window]
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                "https://api.kick.com/public/v1/categories",
+                headers={"Authorization": f"Bearer {token}"}
+            )
 
-            if not chunk:
-                continue
-
-            intensity = math.sqrt(
-                sum(x * x for x in chunk) / len(chunk)
-            ) / 32768
-
-            moments.append({
-                "seconds": round(start / rate, 2),
-                "intensity": round(intensity, 4)
-            })
-
-        selected = []
-
-        for moment in sorted(
-            moments,
-            key=lambda x: x["intensity"],
-            reverse=True
-        ):
-            if all(
-                abs(moment["seconds"] - item["seconds"]) > 12
-                for item in selected
-            ):
-                selected.append(moment)
-
-            if len(selected) >= 10:
-                break
-
-        selected.sort(key=lambda x: x["seconds"])
+        if response.status_code != 200:
+            raise HTTPException(
+                502,
+                "Se obtuvo el token, pero la API no respondió correctamente."
+            )
 
         return {
-            "duration_seconds": round(frames / rate, 2),
-            "moments": selected,
-            "note": "Momentos candidatos por intensidad de audio. Revisa cada uno."
+            "connected": True,
+            "service": "Kick API",
+            "message": "Conexión con Kick comprobada correctamente."
         }
 
-    finally:
-        source.unlink(missing_ok=True)
-        audio.unlink(missing_ok=True)
+    except httpx.RequestError:
+        raise HTTPException(502, "No se pudo consultar la API de Kick.")
 
+
+def identify_platform(url):
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+
+    if parsed.scheme != "https":
+        raise HTTPException(400, "Utiliza un enlace HTTPS.")
+
+    if host == "kick.com" or host.endswith(".kick.com"):
+        return "Kick"
+
+    if (
+        host == "youtube.com"
+        or host.endswith(".youtube.com")
+        or host == "youtu.be"
+    ):
+        return "YouTube"
+
+    raise HTTPException(400, "Plataforma no compatible.")
+
+
+@app.post("/check-link")
 @app.post("/analyze-link")
-def analyze_link(data: dict):
+async def check_link(data: dict):
     url = str(data.get("url", "")).strip()
 
-    if not url.startswith(("https://", "http://")):
-        raise HTTPException(400, "Enlace inválido")
+    if not url:
+        raise HTTPException(400, "Introduce un enlace.")
+
+    platform = identify_platform(url)
+
+    if platform == "Kick":
+        await get_kick_token()
+
+        return {
+            "status": "link_recognized",
+            "platform": "Kick",
+            "api_connected": True,
+            "message": (
+                "Enlace reconocido y conexión con Kick comprobada. "
+                "Todavía necesitamos acceso autorizado al vídeo "
+                "para analizar sus momentos."
+            )
+        }
 
     return {
-        "status": "source_required",
+        "status": "link_recognized",
+        "platform": "YouTube",
+        "api_connected": False,
         "message": (
-            "Para analizar este enlace necesitamos acceso oficial "
-            "autorizado al video. También puedes subir el archivo."
+            "Enlace de YouTube reconocido. "
+            "El análisis requiere acceso autorizado al contenido."
         )
     }
